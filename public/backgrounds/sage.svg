@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900">
+ <defs><linearGradient id="base" x2="1" y2="1"><stop stop-color="#e7efe6"/><stop offset="1" stop-color="#cddcd3"/></linearGradient><filter id="blur"><feGaussianBlur stdDeviation="60"/></filter></defs>
+ <path fill="url(#base)" d="M0 0h1600v900H0z"/>
+ <g filter="url(#blur)" opacity=".65"><ellipse cx="180" cy="300" rx="310" ry="360" fill="#f7f4e8"/><ellipse cx="1300" cy="650" rx="370" ry="330" fill="#b9cec2"/><ellipse cx="1050" cy="80" rx="360" ry="270" fill="#eef0df"/></g>
+ <g fill="none" stroke="#91aa98" stroke-width="3" opacity=".22"><path d="M1360 950Q1290 630 1450 200"/><path d="M1320 770Q1170 590 1180 460"/><path d="M1335 655Q1480 555 1510 410"/></g>
+ <g fill="#91aa98" opacity=".16"><ellipse cx="1417" cy="320" rx="24" ry="70" transform="rotate(35 1417 320)"/><ellipse cx="1360" cy="450" rx="29" ry="83" transform="rotate(-28 1360 450)"/><ellipse cx="1465" cy="524" rx="25" ry="72" transform="rotate(50 1465 524)"/><ellipse cx="1211" cy="560" rx="23" ry="73" transform="rotate(-30 1211 560)"/><ellipse cx="1298" cy="647" rx="26" ry="80" transform="rotate(-45 1298 647)"/></g>
+</svg>

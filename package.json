@@ -1,0 +1,12 @@
+{
+  "name": "weekly-review",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "拾周 · 本地周报与待办",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  }
+}
