@@ -11,14 +11,15 @@ const backgrounds = [
   { id: 'sage', name: '薄荷微光' },
   { id: 'paper', name: '奶油纸笺' },
 ];
-const defaults = { background: 'mist', customBackground: null, fontSize: 15, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
+const defaults = { background: 'mist', customBackground: null, fontSize: 15, uiFontSize: 16, sidebarCollapsed: false, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
 const state = {
   week: mondayOf(today), monthYear: todayDate.getFullYear(), monthIndex: todayDate.getMonth(),
-  entries: [], todos: [], calendar: [], summary: '', summaryDirty: false,
+  entries: [], todos: [], calendar: [], overview: null, overviewLimit: 12, summary: '', summaryDirty: false,
   settings: { ...defaults }, draftSettings: null, selectedDay: null, tab: 'records', view: 'weeks',
-  todoFilter: 'pending', wideFilter: 'pending', editEntry: null, editTodo: null, deleteAction: null,
+  todoFilter: 'pending', wideFilter: 'pending', editEntry: null, editEntryWeek: null, editTodo: null, deleteAction: null,
 };
 let toastTimer, summaryTimer, pendingSave = Promise.resolve(), savingCount = 0, navigationVersion = 0, requestedWeek = state.week;
+const mobileSidebar = window.matchMedia('(max-width: 760px)');
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const shortDate = key => `${Number(key.slice(5, 7))}月${Number(key.slice(8))}日`;
@@ -53,9 +54,52 @@ function applyAppearance(settings) {
   const style = document.documentElement.style;
   for (const [key, variable] of Object.entries({ textColor: '--text', headingColor: '--heading', entryColor: '--entry-text', todoColor: '--todo-text' })) style.setProperty(variable, settings[key]);
   style.setProperty('--font-size', `${settings.fontSize}px`);
+  style.setProperty('--ui-font-size', `${settings.uiFontSize}px`);
   style.setProperty('--background-image', `url("${backgroundUrl(settings)}")`);
 }
+function applySidebar() {
+  const open = mobileSidebar.matches ? document.body.classList.contains('sidebar-open') : !state.settings.sidebarCollapsed;
+  const sidebar = $('#sidebar');
+  const focusInSidebar = sidebar.contains(document.activeElement);
+  document.body.classList.toggle('sidebar-collapsed', state.settings.sidebarCollapsed);
+  sidebar.inert = !open;
+  $('.workspace').inert = mobileSidebar.matches && open;
+  for (const id of ['#sidebar-toggle', '#sidebar-collapse']) $(id).setAttribute('aria-expanded', String(open));
+  const label = mobileSidebar.matches && open ? '关闭导航' : '展开侧栏';
+  $('#sidebar-toggle').setAttribute('aria-label', label);
+  $('#sidebar-toggle').title = label;
+  $('#sidebar-collapse').setAttribute('aria-label', mobileSidebar.matches ? '关闭导航' : '折叠侧栏');
+  $('#sidebar-collapse').title = mobileSidebar.matches ? '关闭导航' : '折叠侧栏';
+  if (!open && focusInSidebar) $('#sidebar-toggle').focus();
+}
+function closeSidebar() {
+  document.body.classList.remove('sidebar-open');
+  applySidebar();
+}
+async function toggleSidebar() {
+  if (mobileSidebar.matches) {
+    document.body.classList.toggle('sidebar-open');
+    applySidebar();
+    if (document.body.classList.contains('sidebar-open')) $('#sidebar-collapse').focus();
+    return;
+  }
+  const previous = state.settings.sidebarCollapsed;
+  state.settings.sidebarCollapsed = !previous;
+  applySidebar();
+  for (const id of ['#sidebar-toggle', '#sidebar-collapse']) $(id).disabled = true;
+  try {
+    state.settings = await api('/api/settings', { method: 'PUT', body: { sidebarCollapsed: !previous } });
+  } catch (error) {
+    state.settings.sidebarCollapsed = previous;
+    throw error;
+  } finally {
+    for (const id of ['#sidebar-toggle', '#sidebar-collapse']) $(id).disabled = false;
+    applySidebar();
+    (state.settings.sidebarCollapsed ? $('#sidebar-toggle') : $('#sidebar-collapse')).focus();
+  }
+}
 function renderCalendar() {
+  $('#nav-record-count').textContent = state.calendar.reduce((total, item) => total + item.count, 0);
   $('#month-picker-button').textContent = `${state.monthYear} 年 ${state.monthIndex + 1} 月`;
   $('#month-picker').value = `${state.monthYear}-${String(state.monthIndex + 1).padStart(2, '0')}`;
   const recordedWeeks = new Set(state.calendar.map(item => item.week));
@@ -74,7 +118,7 @@ function renderWeekHeader() {
   const info = isoWeek(state.week);
   const end = addDays(state.week, 6);
   $('#hero-week').textContent = `${info.year} · WEEK ${String(info.week).padStart(2, '0')}`;
-  $('#hero-dates').textContent = `${shortDate(state.week)} — ${shortDate(end)}`;
+  $('#hero-dates').innerHTML = `<span>${shortDate(state.week)} —</span> <span>${shortDate(end)}</span>`;
   $('#hero-record-count').textContent = `${state.entries.length} 条记录`;
   const startYear = state.week.slice(0, 4), endYear = end.slice(0, 4);
   $('#hero-month').textContent = startYear === endYear ? `${startYear} 年` : `${startYear} — ${endYear}`;
@@ -86,7 +130,7 @@ function renderWeekHeader() {
   $('#journal-footer-label').textContent = `${info.year} 年 · 第 ${info.week} 周`;
   $('#week-days').innerHTML = Array.from({ length: 7 }, (_, i) => {
     const key = addDays(state.week, i);
-    return `<button class="week-day${key === today ? ' today' : ''}${key === state.selectedDay ? ' chosen' : ''}" data-day="${key}" aria-label="${key} ${weekdays[i]}" aria-pressed="${key === state.selectedDay}"><span>${weekdays[i]}${key === today ? ' · 今' : ''}</span><strong>${Number(key.slice(8))}</strong>${days.has(key) ? '<i class="day-dot"></i>' : ''}</button>`;
+    return `<button class="week-day${key === today ? ' today' : ''}${key === state.selectedDay ? ' chosen' : ''}" data-day="${key}" aria-label="${key} ${weekdays[i]}${key === today ? '，今天' : ''}" aria-pressed="${key === state.selectedDay}"><span>${weekdays[i]}</span><strong>${Number(key.slice(8))}</strong>${days.has(key) ? '<i class="day-dot"></i>' : ''}</button>`;
   }).join('');
 }
 const notebook = `<svg class="journal-illustration" viewBox="0 0 160 140" fill="none" aria-hidden="true"><ellipse cx="83" cy="124" rx="48" ry="7" fill="#e9eddf"/><path d="M112 111c8-22 14-32 27-34-1 11-7 21-27 34Z" fill="#d4dfc3"/><path d="M117 108c-5-17-3-27 2-32 7 9 8 19-2 32Z" fill="#e1e8d5"/><rect x="36" y="22" width="71" height="93" rx="7" transform="rotate(-7 36 22)" fill="#f9fbf3" stroke="#c2cfb0" stroke-width="1.4"/><path d="m48 31 8 77" stroke="#e3e9d7"/><path d="m65 45 27-3m-25 14 30-3m-29 14 23-2m-22 13 29-3m-27 14 18-2" stroke="#d7e0c8" stroke-width="2.1" stroke-linecap="round"/><g stroke="#9eaf8a" stroke-width="1.8" stroke-linecap="round"><path d="m33 37 9-1m-8 15 9-1m-7 15 8-1m-7 15 9-1m-7 15 9-1"/></g><path d="m99 97 23-54 7 3-23 54-8 8Z" fill="#a5b48d"/><path d="m122 43 2-5c1-3 3-3 5-2s3 2 2 5l-2 5" fill="#c5d0b5"/><path d="m99 98-1 10 8-8" fill="#dfd8bc"/><path d="m98 105 0 3 3-2" fill="#8e9b7b"/><path d="m28 99-4 4m1-15-5-1m107-69 4-5m5 16 6-1" stroke="#c7d4b6" stroke-width="1.6" stroke-linecap="round"/></svg>`;
@@ -94,6 +138,18 @@ function recordMarkup(entry) {
   const style = `${entry.color ? `color:${entry.color};` : ''}${entry.font_size ? `font-size:${entry.font_size}px;` : ''}`;
   const time = new Date(entry.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
   return `<article class="record-card"><span class="record-bullet"></span><div class="record-body"><p class="record-content" style="${style}">${escape(entry.content)}</p><div class="record-timestamp">${escape(time)}</div></div><div class="record-actions"><button class="icon-button" data-edit-entry="${entry.id}" aria-label="编辑记录" title="编辑">${icon('edit')}</button><button class="icon-button delete-button" data-delete-entry="${entry.id}" aria-label="删除记录" title="删除">${icon('trash')}</button></div></article>`;
+}
+function recordGroupsMarkup(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    const key = entry.date || 'undated';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  return [...groups].map(([key, entries]) => {
+    const i = key === 'undated' ? null : (parseDate(key).getDay() + 6) % 7;
+    return `<section class="record-group"><div class="record-group-heading"><span>${key === 'undated' ? '未指定日期' : weekdays[i]}</span>${key === 'undated' ? '' : `<span>${shortDate(key)}</span>`}<span class="group-line"></span><span>${entries.length}</span></div>${entries.map(recordMarkup).join('')}</section>`;
+  }).join('');
 }
 function renderRecords() {
   const search = $('#record-search').value.trim().toLocaleLowerCase();
@@ -104,16 +160,49 @@ function renderRecords() {
     $('#records-list').innerHTML = `<div class="empty-records">${notebook}<h3>${label}</h3>${!search ? `<button class="quiet-button" data-empty-add>${icon('plus')}记下第一笔</button>` : ''}</div>`;
     return;
   }
-  const groups = new Map();
-  for (const entry of filtered) {
-    const key = entry.date || 'undated';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(entry);
+  $('#records-list').innerHTML = recordGroupsMarkup(filtered);
+}
+function renderOverview() {
+  $('#overview-load-more').hidden = true;
+  if (!state.overview) {
+    $('#overview-count').textContent = '';
+    $('#overview-list').innerHTML = '<div class="overview-empty">读取中…</div>';
+    return;
   }
-  $('#records-list').innerHTML = [...groups].map(([key, entries]) => {
-    const i = key === 'undated' ? null : (parseDate(key).getDay() + 6) % 7;
-    return `<section class="record-group"><div class="record-group-heading"><span>${key === 'undated' ? '未指定日期' : weekdays[i]}</span>${key === 'undated' ? '' : `<span>${shortDate(key)}</span>`}<span class="group-line"></span><span>${entries.length}</span></div>${entries.map(recordMarkup).join('')}</section>`;
+  const groups = new Map();
+  const getGroup = week => {
+    if (!groups.has(week)) groups.set(week, { week, entries: [], summary: '' });
+    return groups.get(week);
+  };
+  for (const entry of state.overview.entries) getGroup(entry.week).entries.push(entry);
+  for (const note of state.overview.summaries) getGroup(note.week).summary = note.summary;
+  const years = [...new Set([...groups.keys()].map(week => isoWeek(week).year))].sort((a, b) => b - a);
+  const selectedYear = $('#overview-year').value;
+  $('#overview-year').innerHTML = '<option value="all">全部年份</option>' + years.map(year => `<option value="${year}">${year} 年</option>`).join('');
+  $('#overview-year').value = years.includes(Number(selectedYear)) ? selectedYear : 'all';
+  const year = $('#overview-year').value;
+  const query = $('#overview-search').value.trim().toLocaleLowerCase();
+  const filtered = [...groups.values()].sort((a, b) => b.week.localeCompare(a.week)).filter(group => year === 'all' || isoWeek(group.week).year === Number(year)).map(group => ({
+    ...group,
+    entries: group.entries.filter(entry => !query || entry.content.toLocaleLowerCase().includes(query)),
+    summary: !query || group.summary.toLocaleLowerCase().includes(query) ? group.summary : '',
+  })).filter(group => group.entries.length || group.summary);
+  $('#overview-count').textContent = `${filtered.reduce((total, group) => total + group.entries.length, 0)} 条记录 · ${filtered.length} 周`;
+  if (!filtered.length) {
+    $('#overview-list').innerHTML = `<div class="empty-records overview-empty">${notebook}<h3>${query || year !== 'all' ? '没有匹配的记录' : '暂无记录'}</h3></div>`;
+    return;
+  }
+  $('#overview-list').innerHTML = filtered.slice(0, state.overviewLimit).map(group => {
+    const info = isoWeek(group.week);
+    const end = addDays(group.week, 6);
+    const period = `${group.week.slice(0, 4)} 年 ${shortDate(group.week)} — ${end.slice(0, 4) !== group.week.slice(0, 4) ? `${end.slice(0, 4)} 年 ` : ''}${shortDate(end)}`;
+    return `<section class="overview-week" data-overview-week="${group.week}"><header class="overview-week-heading"><div><h3>${info.year} 年 · 第 ${info.week} 周</h3><span>${period}</span></div><button class="quiet-button" data-open-week="${group.week}" aria-label="打开 ${group.week} 的周报">打开周报${icon('right')}</button></header><div class="overview-week-body">${recordGroupsMarkup(group.entries)}${group.summary ? `<section class="overview-summary"><div><span>周总结</span><button class="icon-button" data-summary-week="${group.week}" aria-label="编辑 ${group.week} 的周总结">${icon('edit')}</button></div><p class="record-content">${escape(group.summary)}</p></section>` : ''}</div></section>`;
   }).join('');
+  $('#overview-load-more').hidden = filtered.length <= state.overviewLimit;
+}
+async function refreshOverview() {
+  state.overview = await api('/api/overview');
+  renderOverview();
 }
 function dueLabel(value) {
   const key = value.slice(0, 10);
@@ -134,10 +223,8 @@ function renderTodos() {
   $('#nav-todo-count').textContent = pending.length;
   $('#pending-count').textContent = pending.length;
   $('#completed-count').textContent = completed.length;
-  $('#todo-progress-label').textContent = `${completed.length} / ${state.todos.length}`;
-  $('#todo-progress-bar').style.width = `${state.todos.length ? completed.length / state.todos.length * 100 : 0}%`;
   const railTodos = state.todoFilter === 'pending' ? pending : completed;
-  $('#todo-list').innerHTML = railTodos.length ? railTodos.map(todoMarkup).join('') : emptyTodos(state.todoFilter === 'pending' ? '暂无待办，片刻轻盈。' : '暂无已完成事项');
+  $('#todo-list').innerHTML = railTodos.length ? railTodos.map(todoMarkup).join('') : emptyTodos(state.todoFilter === 'pending' ? '暂无待办' : '暂无已完成事项');
   $$('[data-todo-filter]').forEach(button => button.classList.toggle('active', button.dataset.todoFilter === state.todoFilter));
   const search = $('#todo-search').value.trim().toLocaleLowerCase();
   const wide = (state.wideFilter === 'pending' ? pending : state.wideFilter === 'completed' ? completed : state.todos).filter(todo => !search || todo.content.toLocaleLowerCase().includes(search));
@@ -149,10 +236,12 @@ function renderView() {
   const weeks = state.view === 'weeks';
   $('#week-view').hidden = !weeks;
   $('#week-hero').hidden = !weeks;
-  $('#todos-view').hidden = weeks;
+  $('#todos-view').hidden = state.view !== 'todos';
+  $('#overview-view').hidden = state.view !== 'overview';
   $('#export-button').hidden = !weeks;
-  $('#page-title').textContent = weeks ? '我的周报' : '全部待办';
-  document.title = `拾周 · ${weeks ? '我的周报' : '全部待办'}`;
+  const title = { weeks: '我的周报', overview: '所有记录', todos: '全部待办' }[state.view];
+  $('#page-title').textContent = title;
+  document.title = `拾周 · ${title}`;
   $$('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === state.view));
 }
 function renderTab() {
@@ -166,8 +255,9 @@ function renderTab() {
 }
 function renderWeek() { renderCalendar(); renderWeekHeader(); renderRecords(); }
 async function refreshEntries() {
-  [state.entries, state.calendar] = await Promise.all([api(`/api/entries?week=${state.week}`), api('/api/calendar')]);
+  [state.entries, state.calendar, state.overview] = await Promise.all([api(`/api/entries?week=${state.week}`), api('/api/calendar'), state.overview ? api('/api/overview') : Promise.resolve(null)]);
   renderWeek();
+  if (state.overview) renderOverview();
 }
 async function refreshTodos() { state.todos = await api('/api/todos'); renderTodos(); }
 function updateSummaryStatus(label) { $('#summary-status').textContent = label; }
@@ -180,6 +270,11 @@ function saveSummary() {
   updateSummaryStatus('保存中…');
   pendingSave = pendingSave.catch(() => {}).then(() => api(`/api/weeks/${week}`, { method: 'PUT', body: { summary } })).then(() => {
     if (state.week === week && state.summary === summary && !state.summaryDirty) updateSummaryStatus('已保存');
+    if (state.overview) {
+      state.overview.summaries = state.overview.summaries.filter(note => note.week !== week);
+      if (summary.trim()) state.overview.summaries.push({ week, summary });
+      renderOverview();
+    }
   }).catch(error => {
     if (state.week === week) { state.summaryDirty = true; updateSummaryStatus('保存失败'); }
     throw error;
@@ -214,11 +309,13 @@ function moveMonth(delta) {
   state.monthYear = date.getFullYear(); state.monthIndex = date.getMonth(); renderCalendar();
 }
 function openEntry(id = null) {
+  const entry = state.entries.find(item => item.id === id) || state.overview?.entries.find(item => item.id === id);
+  if (id && !entry) throw new Error('记录不存在，请刷新后重试');
   state.editEntry = id;
-  const entry = state.entries.find(item => item.id === id);
+  state.editEntryWeek = entry?.week || state.week;
   $('#entry-dialog-title').textContent = entry ? '编辑记录' : '记一笔';
   $('#entry-date').innerHTML = '<option value="">不指定日期</option>' + Array.from({ length: 7 }, (_, i) => {
-    const key = addDays(state.week, i);
+    const key = addDays(state.editEntryWeek, i);
     return `<option value="${key}">${shortDate(key)} · ${weekdays[i]}</option>`;
   }).join('');
   $('#entry-date').value = entry ? entry.date || '' : state.selectedDay || '';
@@ -252,8 +349,9 @@ function renderSettings() {
   $('#background-options').innerHTML = backgrounds.map(bg => `<button class="background-option${settings.background === bg.id ? ' active' : ''}" data-background="${bg.id}" aria-pressed="${settings.background === bg.id}"><span class="background-preview" style="background-image:url('/backgrounds/${bg.id}.svg')"></span><span class="background-name">${bg.name}</span></button>`).join('') + (settings.customBackground ? `<button class="background-option${settings.background === 'custom' ? ' active' : ''}" data-background="custom" aria-pressed="${settings.background === 'custom'}"><span class="background-preview" style="background-image:url('${settings.customBackground}')"></span><span class="background-name">我的背景</span></button>` : '');
   $('#global-font-size').value = settings.fontSize;
   $('#font-size-value').textContent = `${settings.fontSize} px`;
+  $('#ui-font-size').value = settings.uiFontSize;
+  $('#ui-font-size-value').textContent = `${settings.uiFontSize} px`;
   $$('[data-setting-color]').forEach(input => { input.value = settings[input.dataset.settingColor]; });
-  $('#appearance-preview').style.fontSize = `${settings.fontSize}px`;
   applyAppearance(settings);
 }
 function openSettings() {
@@ -295,12 +393,12 @@ on('#calendar-grid', 'click', async e => {
   const button = e.target.closest('[data-calendar-date]');
   if (!button) return;
   await navigateWeek(mondayOf(button.dataset.calendarDate), false);
-  document.body.classList.remove('sidebar-open');
+  closeSidebar();
 });
 on('#calendar-today', 'click', async () => {
   await navigateWeek(mondayOf(today), false);
   state.monthYear = todayDate.getFullYear(); state.monthIndex = todayDate.getMonth(); renderCalendar();
-  document.body.classList.remove('sidebar-open');
+  closeSidebar();
 });
 on('#previous-week', 'click', () => navigateWeek(addDays(requestedWeek, -7)));
 on('#next-week', 'click', () => navigateWeek(addDays(requestedWeek, 7)));
@@ -317,6 +415,10 @@ on('#week-days', 'click', e => {
 on('#all-dates', 'click', () => { state.selectedDay = null; renderWeekHeader(); renderRecords(); });
 on('#record-search', 'input', renderRecords);
 on('#todo-search', 'input', renderTodos);
+on('#overview-search', 'input', () => { state.overviewLimit = 12; renderOverview(); });
+on('#overview-year', 'change', () => { state.overviewLimit = 12; renderOverview(); });
+on('#overview-load-more', 'click', () => { state.overviewLimit += 12; renderOverview(); });
+on('#overview-this-week', 'click', () => navigateWeek(mondayOf(today)));
 on('#records-tab', 'click', () => { state.tab = 'records'; renderTab(); });
 on('#summary-tab', 'click', () => { state.tab = 'summary'; renderTab(); });
 on('#add-entry', 'click', () => openEntry());
@@ -331,7 +433,7 @@ on('#entry-form', 'submit', async e => {
   const button = e.target.querySelector('[type=submit]');
   const content = $('#entry-content').value.trim();
   if (!content) { $('#entry-content').focus(); throw new Error('记录内容不能为空'); }
-  const value = { week: state.week, date: $('#entry-date').value || null, content, color: $('#entry-inherit-color').checked ? null : $('#entry-color').value, font_size: $('#entry-size').value ? Number($('#entry-size').value) : null };
+  const value = { week: state.editEntryWeek, date: $('#entry-date').value || null, content, color: $('#entry-inherit-color').checked ? null : $('#entry-color').value, font_size: $('#entry-size').value ? Number($('#entry-size').value) : null };
   button.disabled = true;
   try {
     await api(state.editEntry ? `/api/entries/${state.editEntry}` : '/api/entries', { method: state.editEntry ? 'PUT' : 'POST', body: value });
@@ -373,13 +475,13 @@ on('#week-summary', 'input', e => {
 on('#save-summary', 'click', async () => { await saveSummary(); toast('周总结已保存'); });
 on('#export-button', 'click', exportWeek);
 on('#settings-button', 'click', openSettings);
-on('#sidebar-settings', 'click', openSettings);
 on('#background-options', 'click', e => {
   const button = e.target.closest('[data-background]');
   if (!button) return;
   state.draftSettings.background = button.dataset.background; renderSettings();
 });
 on('#global-font-size', 'input', e => { state.draftSettings.fontSize = Number(e.target.value); renderSettings(); });
+on('#ui-font-size', 'input', e => { state.draftSettings.uiFontSize = Number(e.target.value); renderSettings(); });
 $$('[data-setting-color]').forEach(input => input.addEventListener('input', () => {
   state.draftSettings[input.dataset.settingColor] = input.value; applyAppearance(state.draftSettings);
 }));
@@ -397,7 +499,7 @@ on('#background-upload', 'change', async e => {
     draft.customBackground = uploaded.url; draft.background = 'custom'; renderSettings();
   } finally { $('#upload-label').textContent = '上传背景'; e.target.value = ''; e.target.disabled = false; $('#save-settings').disabled = false; }
 });
-on('#reset-settings', 'click', () => { state.draftSettings = { ...defaults, customBackground: state.draftSettings.customBackground }; renderSettings(); });
+on('#reset-settings', 'click', () => { state.draftSettings = { ...defaults, customBackground: state.draftSettings.customBackground, sidebarCollapsed: state.settings.sidebarCollapsed }; renderSettings(); });
 on('#save-settings', 'click', async e => {
   e.target.disabled = true;
   try {
@@ -405,16 +507,44 @@ on('#save-settings', 'click', async e => {
     $('#settings-dialog').close(); toast('外观已保存');
   } finally { e.target.disabled = false; }
 });
-$('#settings-dialog').addEventListener('close', () => { applyAppearance(state.settings); state.draftSettings = null; });
-on('#mobile-menu', 'click', () => document.body.classList.add('sidebar-open'));
-on('#sidebar-scrim', 'click', () => document.body.classList.remove('sidebar-open'));
+$('#settings-dialog').addEventListener('close', () => { applyAppearance(state.settings); applySidebar(); state.draftSettings = null; });
+on('#sidebar-toggle', 'click', toggleSidebar);
+on('#sidebar-collapse', 'click', toggleSidebar);
+on('#sidebar-scrim', 'click', closeSidebar);
+mobileSidebar.addEventListener('change', closeSidebar);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.body.classList.contains('sidebar-open')) closeSidebar();
+});
 
 document.addEventListener('click', async e => {
   try {
     const close = e.target.closest('[data-close-dialog]');
     if (close) return close.closest('dialog').close();
     const view = e.target.closest('[data-view]');
-    if (view) { state.view = view.dataset.view; renderView(); document.body.classList.remove('sidebar-open'); return; }
+    if (view) {
+      const version = ++navigationVersion;
+      requestedWeek = state.week;
+      $('#week-summary').readOnly = false;
+      await saveSummary();
+      if (version !== navigationVersion) return;
+      state.view = view.dataset.view; renderView(); closeSidebar();
+      if (state.view === 'overview') {
+        renderOverview();
+        try { await refreshOverview(); }
+        catch (error) {
+          if (!state.overview) $('#overview-list').innerHTML = '<div class="overview-empty"><button class="quiet-button" data-refresh-overview>重新连接</button></div>';
+          throw error;
+        }
+      }
+      return;
+    }
+    if (e.target.closest('[data-refresh-overview]')) return await refreshOverview();
+    const weekLink = e.target.closest('[data-open-week], [data-summary-week]');
+    if (weekLink) {
+      await navigateWeek(weekLink.dataset.openWeek || weekLink.dataset.summaryWeek);
+      state.tab = weekLink.dataset.summaryWeek ? 'summary' : 'records'; renderTab();
+      return;
+    }
     if (e.target.closest('[data-empty-add]')) return openEntry();
     const editEntry = e.target.closest('[data-edit-entry]');
     if (editEntry) return openEntry(editEntry.dataset.editEntry);
@@ -451,22 +581,19 @@ setInterval(renderTodos, 60000);
 
 async function init() {
   $('.app-shell').inert = true;
-  $('#connection-status').textContent = '读取中…';
   $('#today-label').textContent = `${todayDate.getFullYear()} 年 ${todayDate.getMonth() + 1} 月 ${todayDate.getDate()} 日 · 星期${'日一二三四五六'[todayDate.getDay()]}`;
-  $('#footer-year').textContent = todayDate.getFullYear();
   renderWeek(); renderTodos();
   try {
     const [settings, entries, todos, calendar, note] = await Promise.all([api('/api/settings'), api(`/api/entries?week=${state.week}`), api('/api/todos'), api('/api/calendar'), api(`/api/weeks/${state.week}`)]);
     Object.assign(state, { settings, entries, todos, calendar, summary: note.summary });
     $('#week-summary').value = state.summary;
     $('#summary-length').textContent = `${state.summary.length} 字`;
-    applyAppearance(settings); renderWeek(); renderTodos();
-    $('#connection-status').innerHTML = '<span class="small-dot"></span>已就绪';
+    applyAppearance(settings); applySidebar(); renderWeek(); renderTodos();
   } catch (error) {
-    $('#connection-status').textContent = '连接失败';
     toast(error.message, true);
     $('#records-list').innerHTML = `<div class="empty-records">${notebook}<h3>连接失败</h3><button class="quiet-button" id="retry-connection">重新连接</button></div>`;
     $('#retry-connection').addEventListener('click', init);
   } finally { $('.app-shell').inert = false; }
 }
+applySidebar();
 init();

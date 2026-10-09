@@ -27,7 +27,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id = 1), value TEXT NOT NULL);
 `);
 
-const defaults = { background: 'mist', customBackground: null, fontSize: 15, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
+const defaults = { background: 'mist', customBackground: null, fontSize: 15, uiFontSize: 16, sidebarCollapsed: false, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -78,6 +78,14 @@ function settingsValue(body) {
   const result = { ...current };
   for (const key of ['textColor', 'headingColor', 'entryColor', 'todoColor']) if (key in body) result[key] = colorValue(body[key]) || defaults[key];
   if ('fontSize' in body) result.fontSize = sizeValue(body.fontSize) || defaults.fontSize;
+  if ('uiFontSize' in body) {
+    if (!Number.isInteger(body.uiFontSize) || body.uiFontSize < 12 || body.uiFontSize > 24) fail('界面字号范围为 12–24');
+    result.uiFontSize = body.uiFontSize;
+  }
+  if ('sidebarCollapsed' in body) {
+    if (typeof body.sidebarCollapsed !== 'boolean') fail('侧栏状态必须为布尔值');
+    result.sidebarCollapsed = body.sidebarCollapsed;
+  }
   if ('background' in body) {
     if (!['mist', 'dusk', 'sage', 'paper', 'custom'].includes(body.background)) fail('背景不存在');
     result.background = body.background;
@@ -136,6 +144,12 @@ const server = http.createServer(async (req, res) => {
     if (!['GET', 'HEAD'].includes(method)) {
       const origin = req.headers.origin;
       if (origin && origin !== `http://${req.headers.host}`) throw new HttpError(403, '请求来源无效');
+    }
+    if (path === '/api/overview' && method === 'GET') {
+      return json(res, 200, {
+        entries: db.prepare('SELECT * FROM entries ORDER BY week DESC, date IS NULL, date, created_at').all(),
+        summaries: db.prepare('SELECT week, summary FROM weeks ORDER BY week DESC').all().filter(note => note.summary.trim()),
+      });
     }
     if (path === '/api/settings') {
       if (method === 'GET') return json(res, 200, readSettings());
