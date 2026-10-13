@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <div id="page-background" class="page-background" aria-hidden="true"><div class="background-layer"></div><div class="background-layer"></div></div>
   <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
     <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4m8-4v4M8 14h2m4 0h2m-8 3h2"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
@@ -29,6 +30,7 @@
     <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
     <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16m7-11-3 3 3 3"/></symbol>
+    <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 3v13a2 2 0 0 0 2 2h13M3 6h13a2 2 0 0 1 2 2v13"/></symbol>
   </defs></svg>
   <div class="app-shell">
     <button id="sidebar-scrim" class="sidebar-scrim" aria-label="关闭导航"></button>
@@ -78,10 +80,21 @@
   <dialog id="todo-dialog" class="editor-dialog"><form id="todo-form"><div class="dialog-heading"><div><span class="section-eyebrow">TO-DO LIST</span><h2 id="todo-dialog-title">新增待办</h2></div><button type="button" class="icon-button" data-close-dialog aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button></div><label class="field-label" for="todo-content">待办事项</label><textarea id="todo-content" required maxlength="10000" rows="3" placeholder="接下来要做的事…"></textarea><div class="deadline-heading"><label class="field-label" for="todo-due">截止时间</label><button id="clear-deadline" type="button" class="text-button">清除</button></div><input id="todo-due" type="datetime-local" step="60"><div class="record-style-row"><div><label class="field-label" for="todo-color">文字颜色</label><div class="color-control"><input id="todo-color" type="color"><label class="inherit-check"><input id="todo-inherit-color" type="checkbox" checked>跟随外观</label></div></div><div><label class="field-label" for="todo-size">字号</label><select id="todo-size"><option value="">跟随外观</option><option value="12">12 px</option><option value="14">14 px</option><option value="15">15 px</option><option value="16">16 px</option><option value="18">18 px</option><option value="20">20 px</option><option value="24">24 px</option><option value="28">28 px</option></select></div></div><div class="dialog-footer"><button type="button" class="secondary-button" data-close-dialog>取消</button><button type="submit" class="primary-button">保存待办</button></div></form></dialog>
   <dialog id="settings-dialog" class="settings-dialog">
     <div class="dialog-heading"><div><span class="section-eyebrow">MAKE IT YOURS</span><h2>外观设置</h2></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button></div>
-    <label class="field-label">背景</label>
+    <div class="background-heading"><span class="field-label">背景</span><div class="background-mode" role="radiogroup" aria-label="背景模式"><button data-background-mode="single" role="radio" aria-checked="true">单张</button><button data-background-mode="slideshow" role="radio" aria-checked="false">轮播</button></div></div>
     <div id="background-options" class="background-options"></div>
-    <label class="upload-background" for="background-upload"><svg class="icon"><use href="#i-upload"/></svg><span id="upload-label">上传背景</span><span class="upload-formats">JPG / PNG / WEBP</span></label>
-    <input id="background-upload" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+    <div id="slideshow-controls" class="slideshow-controls" hidden>
+      <div class="background-selection"><span id="background-selected-count" aria-live="polite"></span><button id="background-select-all" class="text-button">全选</button></div>
+      <div class="slideshow-interval"><label class="field-label" for="background-interval">切换间隔</label><div class="interval-inputs"><input id="background-interval" type="number" min="5" max="86400" step="1" value="30" required><select id="background-interval-unit" aria-label="间隔单位"><option value="1">秒</option><option value="60">分钟</option></select></div></div>
+    </div>
+    <label class="upload-background" for="background-upload"><svg class="icon"><use href="#i-upload"/></svg><span id="upload-label">上传图片</span><span class="upload-formats">JPG / PNG / WEBP</span></label>
+    <input id="background-upload" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+    <div class="settings-section">
+      <span class="field-label settings-section-title">卡片透明度</span>
+      <div class="settings-label-row"><label class="field-label" for="hero-transparency">周标题</label><output id="hero-transparency-value" for="hero-transparency">45%</output></div>
+      <input id="hero-transparency" type="range" min="0" max="90" step="1">
+      <div class="settings-label-row content-size-label"><label class="field-label" for="todo-transparency">待办事项</label><output id="todo-transparency-value" for="todo-transparency">30%</output></div>
+      <input id="todo-transparency" type="range" min="0" max="90" step="1">
+    </div>
     <div class="settings-section">
       <span class="field-label settings-section-title">字体大小</span>
       <div class="settings-label-row"><label class="field-label" for="ui-font-size">界面文字</label><output id="ui-font-size-value" for="ui-font-size">16 px</output></div>
@@ -92,6 +105,16 @@
     <div class="settings-section"><label class="field-label">文字颜色</label><div class="region-colors"><label>界面文字<input type="color" data-setting-color="textColor"></label><label>标题<input type="color" data-setting-color="headingColor"></label><label>周报内容<input type="color" data-setting-color="entryColor"></label><label>待办内容<input type="color" data-setting-color="todoColor"></label></div></div>
     <div id="appearance-preview" class="appearance-preview"><svg class="icon"><use href="#i-leaf"/></svg><div><strong>本周记录</strong><p class="preview-interface">周五 · 10月9日</p><p class="preview-entry">完成本周回顾</p><p class="preview-todo">整理下周待办</p></div><span>微软雅黑</span></div>
     <div class="dialog-footer"><button id="reset-settings" class="text-button">恢复默认</button><button id="save-settings" class="primary-button">保存外观</button></div>
+  </dialog>
+  <dialog id="background-crop-dialog" class="crop-dialog" aria-labelledby="crop-title">
+    <div class="dialog-heading"><div><h2 id="crop-title">调整取景</h2><span id="crop-name" class="crop-name"></span></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button></div>
+    <div class="crop-preview-shell"><div id="crop-preview" class="crop-preview" role="img" tabindex="0" aria-label="背景取景预览"></div></div>
+    <div class="crop-fit-row"><label class="field-label" for="crop-fit">显示方式</label><select id="crop-fit"><option value="cover">铺满画面</option><option value="contain">完整图片</option></select></div>
+    <div class="settings-label-row"><label class="field-label" for="crop-x">水平位置</label><output id="crop-x-value" for="crop-x">50%</output></div>
+    <input id="crop-x" type="range" min="0" max="100" step="0.1">
+    <div class="settings-label-row content-size-label"><label class="field-label" for="crop-y">垂直位置</label><output id="crop-y-value" for="crop-y">50%</output></div>
+    <input id="crop-y" type="range" min="0" max="100" step="0.1">
+    <div class="dialog-footer"><button id="crop-center" class="text-button">居中</button><button class="secondary-button" data-close-dialog>取消</button><button id="apply-background-crop" class="primary-button">应用取景</button></div>
   </dialog>
   <dialog id="delete-dialog" class="delete-dialog"><div class="delete-icon"><svg class="icon"><use href="#i-trash"/></svg></div><h2 id="delete-title">删除这条记录？</h2><div class="dialog-footer"><button id="cancel-delete" class="secondary-button">取消</button><button id="confirm-delete" class="danger-button">删除</button></div></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

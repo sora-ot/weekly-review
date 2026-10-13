@@ -93,7 +93,7 @@ test('旧外观设置自动补齐界面字号和侧栏状态，保留已有字�
   database.close();
   base = null; await launch();
   const settings = (await request('/api/settings')).body;
-  assert.deepEqual(settings, { ...legacy, uiFontSize: 16, sidebarCollapsed: false });
+  assert.deepEqual(settings, { ...legacy, uiFontSize: 16, sidebarCollapsed: false, customBackgrounds: [], backgroundSlideshow: false, backgroundPlaylist: ['mist'], backgroundInterval: 30, backgroundViews: {}, heroTransparency: 45, todoTransparency: 30 });
 });
 
 test('周总结、独立字号、颜色和侧栏状态存入 SQLite，重启仍保留', async () => {
@@ -140,6 +140,87 @@ test('背景上传保存在本地，禁止伪造图片和外部图片地址', as
 });
 test('拒绝其他网站向本地服务写入', async () => {
   assert.equal((await request('/api/todos', 'POST', { content: 'x' }, { headers: { Origin: 'https://example.com', 'Content-Type': 'application/json' } })).status, 403);
+});
+
+test('原有单张自定义背景自动加入图库，保留原有外观', async () => {
+  const current = (await request('/api/settings')).body;
+  const { customBackgrounds, backgroundSlideshow, backgroundPlaylist, backgroundInterval, ...legacy } = current;
+  await stop();
+  const database = new DatabaseSync(join(data, 'weekly-review.sqlite3'));
+  database.prepare('UPDATE settings SET value=? WHERE id=1').run(JSON.stringify(legacy));
+  database.close(); base = null; await launch();
+  assert.deepEqual((await request('/api/settings')).body, { ...legacy, customBackgrounds: [{ url: legacy.customBackground, name: '我的背景' }], backgroundSlideshow: false, backgroundPlaylist: [legacy.customBackground], backgroundInterval: 30 });
+});
+
+test('多张上传背景与内置背景混合轮播，间隔、名称与选择顺序重启后保留', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nS8AAAAASUVORK5CYII=', 'base64');
+  const gallery = [];
+  for (const name of ['晨光', '暮色']) {
+    const response = await fetch(base + '/api/background', { method: 'POST', body: png });
+    assert.equal(response.status, 201);
+    gallery.push({ name, url: (await response.json()).url });
+  }
+  const value = { background: 'custom', customBackground: gallery[1].url, customBackgrounds: gallery, backgroundSlideshow: true, backgroundPlaylist: ['mist', gallery[0].url, 'dusk', gallery[1].url], backgroundInterval: 7, backgroundViews: { mist: { x: 10, y: 70, fit: 'cover' }, [gallery[0].url]: { x: 85, y: 50, fit: 'cover' }, [gallery[1].url]: { x: 50, y: 35, fit: 'contain' } } };
+  const saved = await request('/api/settings', 'PUT', value);
+  assert.equal(saved.status, 200);
+  for (const [key, expected] of Object.entries(value)) assert.deepEqual(saved.body[key], expected);
+  await stop(); base = null; await launch();
+  assert.deepEqual((await request('/api/settings')).body, saved.body);
+  const collapsed = (await request('/api/settings', 'PUT', { sidebarCollapsed: true })).body;
+  assert.deepEqual(collapsed, { ...saved.body, sidebarCollapsed: true });
+  assert.equal((await request('/api/settings', 'PUT', { backgroundSlideshow: false })).body.backgroundSlideshow, false);
+  assert.deepEqual((await request('/api/settings')).body.customBackgrounds, gallery);
+});
+
+test('无效轮播间隔、图片选择和图库内容不会覆盖已保存设置', async () => {
+  const current = (await request('/api/settings')).body;
+  const invalid = [
+    ...[null, '10', 4, 86401, 5.5].map(backgroundInterval => ({ backgroundInterval })),
+    ...[null, 1, 'true'].map(backgroundSlideshow => ({ backgroundSlideshow })),
+    ...[null, [], 'mist', ['mist', 'mist'], ['custom'], ['../data/weekly-review.sqlite3'], ['https://example.com/x.png'], ['/uploads/00000000.png']].map(backgroundPlaylist => ({ backgroundPlaylist })),
+    { backgroundSlideshow: true, backgroundPlaylist: ['mist'] },
+    { customBackgrounds: null },
+    { customBackgrounds: [{ name: '', url: current.customBackground }] },
+    { customBackgrounds: [{ name: '外部图片', url: 'https://example.com/x.png' }] },
+    { customBackgrounds: [{ name: '不存在', url: '/uploads/00000000.png' }] },
+    { customBackgrounds: [current.customBackgrounds[0], current.customBackgrounds[0]] },
+    { customBackgrounds: [], customBackground: null, background: 'mist' },
+  ];
+  for (const value of invalid) {
+    assert.equal((await request('/api/settings', 'PUT', { ...value, textColor: '#112233' })).status, 400, JSON.stringify(value));
+  }
+  assert.deepEqual((await request('/api/settings')).body, current);
+  for (const backgroundInterval of [5, 86400]) assert.equal((await request('/api/settings', 'PUT', { backgroundInterval })).body.backgroundInterval, backgroundInterval);
+  const removed = await request('/api/settings', 'PUT', { background: 'mist', customBackground: null, customBackgrounds: [], backgroundPlaylist: ['mist'], backgroundSlideshow: false });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.customBackgrounds, []);
+  assert.deepEqual(removed.body.backgroundViews, { mist: current.backgroundViews.mist });
+  // Removing a gallery choice must not delete files that a cancelled preview may need.
+  for (const item of current.customBackgrounds) assert.equal((await fetch(base + item.url)).status, 200);
+});
+
+test('取景和卡片透明度单独保存，重启与侧栏设置更新后仍保留', async () => {
+  const current = (await request('/api/settings')).body;
+  const value = { backgroundViews: { mist: { x: 0, y: 65.5, fit: 'cover' }, paper: { x: 50, y: 20, fit: 'contain' } }, heroTransparency: 60, todoTransparency: 50 };
+  const saved = await request('/api/settings', 'PUT', value);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body, { ...current, ...value });
+  await stop(); base = null; await launch();
+  assert.deepEqual((await request('/api/settings')).body, saved.body);
+  const sidebarCollapsed = !saved.body.sidebarCollapsed;
+  assert.deepEqual((await request('/api/settings', 'PUT', { sidebarCollapsed })).body, { ...saved.body, sidebarCollapsed });
+});
+
+test('拒绝无效取景坐标、显示方式和透明度，不覆盖已有设置', async () => {
+  const current = (await request('/api/settings')).body;
+  const invalid = [
+    ...[null, [], 'cover', { unknown: { x: 50, y: 50, fit: 'cover' } }, { 'https://example.com/a.png': { x: 50, y: 50, fit: 'cover' } }].map(backgroundViews => ({ backgroundViews })),
+    ...[{ x: -1, y: 50, fit: 'cover' }, { x: 101, y: 50, fit: 'cover' }, { x: '50', y: 50, fit: 'cover' }, { x: 50, y: null, fit: 'cover' }, { x: 50, y: 100.1, fit: 'cover' }, { x: 50, y: 50, fit: 'fill' }, { x: 50 }, null].map(view => ({ backgroundViews: { mist: view } })),
+    ...['heroTransparency', 'todoTransparency'].flatMap(key => [null, '50', -1, 91, 50.5].map(value => ({ [key]: value }))),
+  ];
+  for (const value of invalid) assert.equal((await request('/api/settings', 'PUT', { ...value, textColor: '#112233' })).status, 400, JSON.stringify(value));
+  assert.deepEqual((await request('/api/settings')).body, current);
+  for (const value of [0, 90]) assert.equal((await request('/api/settings', 'PUT', { heroTransparency: value, todoTransparency: value })).status, 200);
 });
 
 test('所有记录总览包含跨周记录、未指定日期和仅有总结的周，并排除空白总结', async () => {

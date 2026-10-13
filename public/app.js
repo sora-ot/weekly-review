@@ -1,4 +1,5 @@
 import { dateKey, parseDate, addDays, mondayOf, isoWeek, monthGrid } from './dates.js';
+import { BackgroundPlayer } from './background-player.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -11,20 +12,32 @@ const backgrounds = [
   { id: 'sage', name: '薄荷微光' },
   { id: 'paper', name: '奶油纸笺' },
 ];
-const defaults = { background: 'mist', customBackground: null, fontSize: 15, uiFontSize: 16, sidebarCollapsed: false, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
+const defaults = { background: 'mist', customBackground: null, customBackgrounds: [], backgroundSlideshow: false, backgroundPlaylist: ['mist'], backgroundInterval: 30, backgroundViews: {}, heroTransparency: 45, todoTransparency: 30, fontSize: 15, uiFontSize: 16, sidebarCollapsed: false, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
+const defaultBackgroundView = { x: 50, y: 50, fit: 'cover' };
 const state = {
   week: mondayOf(today), monthYear: todayDate.getFullYear(), monthIndex: todayDate.getMonth(),
   entries: [], todos: [], calendar: [], overview: null, overviewLimit: 12, summary: '', summaryDirty: false,
-  settings: { ...defaults }, draftSettings: null, selectedDay: null, tab: 'records', view: 'weeks',
+  settings: structuredClone(defaults), draftSettings: null, selectedDay: null, tab: 'records', view: 'weeks',
   todoFilter: 'pending', wideFilter: 'pending', editEntry: null, editEntryWeek: null, editTodo: null, deleteAction: null,
 };
 let toastTimer, summaryTimer, pendingSave = Promise.resolve(), savingCount = 0, navigationVersion = 0, requestedWeek = state.week;
 const mobileSidebar = window.matchMedia('(max-width: 760px)');
+const backgroundPlayer = new BackgroundPlayer($('#page-background'));
+let intervalUnit = 1;
+let cropDraft = null, cropPointer = null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const shortDate = key => `${Number(key.slice(5, 7))}月${Number(key.slice(8))}日`;
 const isOverdue = todo => !todo.completed && todo.due && new Date(todo.due) < new Date();
-const backgroundUrl = settings => settings.background === 'custom' ? settings.customBackground : `/backgrounds/${settings.background}.svg`;
+const singleBackgroundId = settings => settings.background === 'custom' ? settings.customBackground : settings.background;
+const backgroundUrl = id => id.startsWith('/uploads/') ? id : `/backgrounds/${id}.svg`;
+const backgroundChoices = settings => [...backgrounds.map(item => ({ ...item, url: `/backgrounds/${item.id}.svg` })), ...settings.customBackgrounds.map(item => ({ ...item, id: item.url }))];
+function applyBackground(settings) {
+  const selected = cropDraft ? [cropDraft.id] : settings.backgroundSlideshow && settings.backgroundPlaylist.length ? settings.backgroundPlaylist : [singleBackgroundId(settings)];
+  const views = Object.fromEntries(Object.entries(settings.backgroundViews).map(([id, view]) => [backgroundUrl(id), view]));
+  if (cropDraft) views[cropDraft.url] = cropDraft.view;
+  backgroundPlayer.configure(selected.map(backgroundUrl), settings.backgroundInterval, views);
+}
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -55,7 +68,9 @@ function applyAppearance(settings) {
   for (const [key, variable] of Object.entries({ textColor: '--text', headingColor: '--heading', entryColor: '--entry-text', todoColor: '--todo-text' })) style.setProperty(variable, settings[key]);
   style.setProperty('--font-size', `${settings.fontSize}px`);
   style.setProperty('--ui-font-size', `${settings.uiFontSize}px`);
-  style.setProperty('--background-image', `url("${backgroundUrl(settings)}")`);
+  style.setProperty('--hero-surface-opacity', String(1 - settings.heroTransparency / 100));
+  style.setProperty('--todo-surface-opacity', String(1 - settings.todoTransparency / 100));
+  applyBackground(settings);
 }
 function applySidebar() {
   const open = mobileSidebar.matches ? document.body.classList.contains('sidebar-open') : !state.settings.sidebarCollapsed;
@@ -346,19 +361,90 @@ function askDelete(kind, id) {
 }
 function renderSettings() {
   const settings = state.draftSettings;
-  $('#background-options').innerHTML = backgrounds.map(bg => `<button class="background-option${settings.background === bg.id ? ' active' : ''}" data-background="${bg.id}" aria-pressed="${settings.background === bg.id}"><span class="background-preview" style="background-image:url('/backgrounds/${bg.id}.svg')"></span><span class="background-name">${bg.name}</span></button>`).join('') + (settings.customBackground ? `<button class="background-option${settings.background === 'custom' ? ' active' : ''}" data-background="custom" aria-pressed="${settings.background === 'custom'}"><span class="background-preview" style="background-image:url('${settings.customBackground}')"></span><span class="background-name">我的背景</span></button>` : '');
+  const selected = new Set(settings.backgroundSlideshow ? settings.backgroundPlaylist : [singleBackgroundId(settings)]);
+  $('#background-options').innerHTML = backgroundChoices(settings).map(bg => {
+    const view = settings.backgroundViews[bg.id] || defaultBackgroundView;
+    return `<div class="background-item"><button class="background-option${selected.has(bg.id) ? ' active' : ''}" data-background="${bg.id}" aria-pressed="${selected.has(bg.id)}" title="${escape(bg.name)}"><span class="background-preview" style="background-image:url('${bg.url}');background-position:${view.x}% ${view.y}%;background-size:${view.fit}"></span><span class="background-name">${escape(bg.name)}</span></button><button class="icon-button background-remove background-crop" data-crop-background="${bg.id}" aria-label="调整取景：${escape(bg.name)}" title="调整取景">${icon('crop')}</button>${bg.id.startsWith('/uploads/') ? `<button class="icon-button background-remove" data-remove-background="${bg.id}" aria-label="移除背景：${escape(bg.name)}" title="移除背景">${icon('close')}</button>` : ''}</div>`;
+  }).join('');
+  $$('[data-background-mode]').forEach(button => {
+    const checked = (button.dataset.backgroundMode === 'slideshow') === settings.backgroundSlideshow;
+    button.setAttribute('aria-checked', String(checked));
+    button.tabIndex = checked ? 0 : -1;
+  });
+  $('#slideshow-controls').hidden = !settings.backgroundSlideshow;
+  $('#background-selected-count').textContent = `${settings.backgroundPlaylist.length} 张已选`;
+  renderInterval();
   $('#global-font-size').value = settings.fontSize;
   $('#font-size-value').textContent = `${settings.fontSize} px`;
   $('#ui-font-size').value = settings.uiFontSize;
   $('#ui-font-size-value').textContent = `${settings.uiFontSize} px`;
+  for (const [id, key] of [['hero', 'heroTransparency'], ['todo', 'todoTransparency']]) {
+    $(`#${id}-transparency`).value = settings[key];
+    $(`#${id}-transparency-value`).textContent = `${settings[key]}%`;
+  }
   $$('[data-setting-color]').forEach(input => { input.value = settings[input.dataset.settingColor]; });
   applyAppearance(settings);
 }
 function openSettings() {
-  state.draftSettings = { ...state.settings };
+  state.draftSettings = structuredClone(state.settings);
+  intervalUnit = state.settings.backgroundInterval >= 60 && state.settings.backgroundInterval % 60 === 0 ? 60 : 1;
   renderSettings();
   $('#settings-dialog').showModal();
 }
+function renderInterval() {
+  const input = $('#background-interval');
+  input.min = String(5 / intervalUnit);
+  input.max = String(86400 / intervalUnit);
+  input.step = intervalUnit === 1 ? '1' : 'any';
+  input.value = String(state.draftSettings.backgroundInterval / intervalUnit);
+  $('#background-interval-unit').value = String(intervalUnit);
+}
+function openBackgroundCrop(id) {
+  const background = backgroundChoices(state.draftSettings).find(item => item.id === id);
+  if (!background) return;
+  cropDraft = { ...background, view: { ...(state.draftSettings.backgroundViews[id] || defaultBackgroundView) }, width: 0, height: 0 };
+  $('#crop-name').textContent = background.name;
+  $('#crop-preview').style.backgroundImage = `url("${background.url}")`;
+  $('#crop-preview').setAttribute('aria-label', `${background.name}取景预览`);
+  $('#background-crop-dialog').showModal();
+  renderBackgroundCrop();
+  const draft = cropDraft;
+  const picture = new Image();
+  picture.onload = () => {
+    if (cropDraft !== draft) return;
+    draft.width = picture.naturalWidth; draft.height = picture.naturalHeight;
+    renderBackgroundCrop();
+  };
+  picture.onerror = () => { if (cropDraft === draft) toast('背景图片无法加载', true); };
+  picture.src = background.url;
+}
+function cropRemainingSpace() {
+  if (!cropDraft?.width || !cropDraft.height) return { x: 0, y: 0 };
+  const rectangle = $('#crop-preview').getBoundingClientRect();
+  const scale = Math[cropDraft.view.fit === 'cover' ? 'max' : 'min'](rectangle.width / cropDraft.width, rectangle.height / cropDraft.height);
+  return { x: rectangle.width - cropDraft.width * scale, y: rectangle.height - cropDraft.height * scale };
+}
+function renderBackgroundCrop() {
+  if (!cropDraft) return;
+  const shell = $('.crop-preview-shell');
+  const ratio = window.innerWidth / window.innerHeight;
+  const width = Math.min(shell.clientWidth, shell.clientHeight * ratio);
+  const preview = $('#crop-preview');
+  preview.style.width = `${width}px`;
+  preview.style.height = `${width / ratio}px`;
+  preview.style.backgroundSize = cropDraft.view.fit;
+  preview.style.backgroundPosition = `${cropDraft.view.x}% ${cropDraft.view.y}%`;
+  $('#crop-fit').value = cropDraft.view.fit;
+  const space = cropRemainingSpace();
+  for (const axis of ['x', 'y']) {
+    $(`#crop-${axis}`).value = cropDraft.view[axis];
+    $(`#crop-${axis}-value`).textContent = `${cropDraft.view[axis]}%`;
+    $(`#crop-${axis}`).disabled = Math.abs(space[axis]) < .5;
+  }
+  $('#apply-background-crop').disabled = !cropDraft.width;
+  applyBackground(state.draftSettings);
+}
+const cropPosition = value => Math.max(0, Math.min(100, Math.round(value * 10) / 10));
 async function exportWeek() {
   await saveSummary();
   const info = isoWeek(state.week);
@@ -476,38 +562,165 @@ on('#save-summary', 'click', async () => { await saveSummary(); toast('周总结
 on('#export-button', 'click', exportWeek);
 on('#settings-button', 'click', openSettings);
 on('#background-options', 'click', e => {
+  const draft = state.draftSettings;
+  const crop = e.target.closest('[data-crop-background]');
+  if (crop) return openBackgroundCrop(crop.dataset.cropBackground);
+  const remove = e.target.closest('[data-remove-background]');
+  if (remove) {
+    const url = remove.dataset.removeBackground;
+    draft.customBackgrounds = draft.customBackgrounds.filter(item => item.url !== url);
+    delete draft.backgroundViews[url];
+    draft.backgroundPlaylist = draft.backgroundPlaylist.filter(id => id !== url);
+    if (draft.customBackground === url) {
+      draft.customBackground = draft.customBackgrounds[0]?.url || null;
+      if (draft.background === 'custom' && !draft.customBackground) draft.background = 'mist';
+    }
+    if (!draft.backgroundPlaylist.length) draft.backgroundPlaylist = [singleBackgroundId(draft)];
+    renderSettings();
+    $('#background-options button')?.focus();
+    return;
+  }
   const button = e.target.closest('[data-background]');
   if (!button) return;
-  state.draftSettings.background = button.dataset.background; renderSettings();
+  const id = button.dataset.background;
+  if (draft.backgroundSlideshow) {
+    draft.backgroundPlaylist = draft.backgroundPlaylist.includes(id) ? draft.backgroundPlaylist.filter(value => value !== id) : [...draft.backgroundPlaylist, id];
+  } else {
+    draft.background = id.startsWith('/uploads/') ? 'custom' : id;
+    if (draft.background === 'custom') draft.customBackground = id;
+    if (!draft.backgroundPlaylist.length) draft.backgroundPlaylist = [id];
+  }
+  renderSettings();
+  $$('[data-background]').find(item => item.dataset.background === id)?.focus();
 });
+$$('[data-background-mode]').forEach(button => button.addEventListener('click', () => {
+  const draft = state.draftSettings;
+  const enabled = button.dataset.backgroundMode === 'slideshow';
+  if (enabled && !draft.backgroundSlideshow && !draft.backgroundPlaylist.includes(singleBackgroundId(draft))) draft.backgroundPlaylist = [singleBackgroundId(draft), ...draft.backgroundPlaylist];
+  draft.backgroundSlideshow = enabled;
+  if (!draft.backgroundPlaylist.length) draft.backgroundPlaylist = [singleBackgroundId(draft)];
+  renderSettings();
+}));
+$('.background-mode').addEventListener('keydown', e => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  e.preventDefault();
+  const buttons = $$('[data-background-mode]');
+  const next = e.key === 'Home' ? buttons[0] : e.key === 'End' ? buttons[1] : buttons.find(button => button !== document.activeElement);
+  next.click(); next.focus();
+});
+on('#background-select-all', 'click', () => {
+  state.draftSettings.backgroundPlaylist = backgroundChoices(state.draftSettings).map(item => item.id);
+  renderSettings();
+});
+on('#background-interval', 'input', e => {
+  if (!e.target.checkValidity()) return;
+  state.draftSettings.backgroundInterval = Math.round(Number(e.target.value) * intervalUnit);
+  applyBackground(state.draftSettings);
+});
+on('#background-interval-unit', 'change', e => { intervalUnit = Number(e.target.value); renderInterval(); });
 on('#global-font-size', 'input', e => { state.draftSettings.fontSize = Number(e.target.value); renderSettings(); });
 on('#ui-font-size', 'input', e => { state.draftSettings.uiFontSize = Number(e.target.value); renderSettings(); });
+for (const [id, key] of [['hero', 'heroTransparency'], ['todo', 'todoTransparency']]) {
+  on(`#${id}-transparency`, 'input', e => {
+    state.draftSettings[key] = Number(e.target.value);
+    $(`#${id}-transparency-value`).textContent = `${e.target.value}%`;
+    applyAppearance(state.draftSettings);
+  });
+}
+on('#crop-fit', 'change', e => { cropDraft.view.fit = e.target.value; renderBackgroundCrop(); });
+for (const axis of ['x', 'y']) on(`#crop-${axis}`, 'input', e => { cropDraft.view[axis] = Number(e.target.value); renderBackgroundCrop(); });
+on('#crop-center', 'click', () => { cropDraft.view.x = cropDraft.view.y = 50; renderBackgroundCrop(); });
+on('#apply-background-crop', 'click', () => {
+  state.draftSettings.backgroundViews[cropDraft.id] = { ...cropDraft.view };
+  $('#background-crop-dialog').close();
+});
+$('#background-crop-dialog').addEventListener('close', () => {
+  // A queued close event may arrive after the dialog has already been reopened.
+  if ($('#background-crop-dialog').open) return;
+  const id = cropDraft?.id;
+  cropDraft = null; cropPointer = null;
+  $('#crop-preview').classList.remove('dragging');
+  if (state.draftSettings) {
+    renderSettings();
+    $$('[data-crop-background]').find(button => button.dataset.cropBackground === id)?.focus();
+  } else applyBackground(state.settings);
+});
+$('#crop-preview').addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !cropDraft?.width) return;
+  e.preventDefault();
+  e.currentTarget.focus();
+  e.currentTarget.setPointerCapture(e.pointerId);
+  cropPointer = { id: e.pointerId, x: e.clientX, y: e.clientY, view: { ...cropDraft.view }, space: cropRemainingSpace() };
+  e.currentTarget.classList.add('dragging');
+});
+$('#crop-preview').addEventListener('pointermove', e => {
+  if (!cropPointer || e.pointerId !== cropPointer.id || !cropDraft) return;
+  for (const axis of ['x', 'y']) {
+    if (Math.abs(cropPointer.space[axis]) >= .5) cropDraft.view[axis] = cropPosition(cropPointer.view[axis] + (e[axis === 'x' ? 'clientX' : 'clientY'] - cropPointer[axis]) / cropPointer.space[axis] * 100);
+  }
+  renderBackgroundCrop();
+});
+for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('#crop-preview').addEventListener(event, () => { cropPointer = null; $('#crop-preview').classList.remove('dragging'); });
+$('#crop-preview').addEventListener('keydown', e => {
+  const movement = { ArrowLeft: ['x', -1], ArrowRight: ['x', 1], ArrowUp: ['y', -1], ArrowDown: ['y', 1] }[e.key];
+  if (!movement || !cropDraft) return;
+  e.preventDefault();
+  const [axis, step] = movement;
+  if (!$(`#crop-${axis}`).disabled) { cropDraft.view[axis] = cropPosition(cropDraft.view[axis] + step * (e.shiftKey ? 10 : 1)); renderBackgroundCrop(); }
+});
+window.addEventListener('resize', renderBackgroundCrop);
 $$('[data-setting-color]').forEach(input => input.addEventListener('input', () => {
   state.draftSettings[input.dataset.settingColor] = input.value; applyAppearance(state.draftSettings);
 }));
 on('#background-upload', 'change', async e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  if (file.size > 12 * 1024 * 1024) { e.target.value = ''; throw new Error('背景图片不能超过 12 MB'); }
+  const files = [...e.target.files];
+  if (!files.length) return;
   const draft = state.draftSettings;
+  if (files.some(file => file.size > 12 * 1024 * 1024)) { e.target.value = ''; throw new Error('每张背景图片不能超过 12 MB'); }
+  if (draft.customBackgrounds.length + files.length > 50) { e.target.value = ''; throw new Error('最多保存 50 张自定义背景'); }
   $('#upload-label').textContent = '上传中…';
   $('#save-settings').disabled = true;
+  $('#reset-settings').disabled = true;
   e.target.disabled = true;
+  const added = [], failures = [];
   try {
-    const uploaded = await api('/api/background', { method: 'POST', body: file });
-    if (state.draftSettings !== draft) return;
-    draft.customBackground = uploaded.url; draft.background = 'custom'; renderSettings();
-  } finally { $('#upload-label').textContent = '上传背景'; e.target.value = ''; e.target.disabled = false; $('#save-settings').disabled = false; }
+    for (const [index, file] of files.entries()) {
+      $('#upload-label').textContent = `上传中 ${index + 1} / ${files.length}`;
+      try {
+        const uploaded = await api('/api/background', { method: 'POST', body: file });
+        if (state.draftSettings !== draft) return;
+        const item = { url: uploaded.url, name: file.name.replace(/\.[^.]+$/, '').trim().slice(0, 120) || '我的背景' };
+        draft.customBackgrounds = [...draft.customBackgrounds, item];
+        added.push(item.url);
+      } catch (error) { failures.push(error.message); }
+      if (state.draftSettings !== draft) return;
+    }
+    if (added.length) {
+      if (draft.backgroundSlideshow) draft.backgroundPlaylist = [...draft.backgroundPlaylist, ...added];
+      else if (added.length > 1) { draft.backgroundSlideshow = true; draft.backgroundPlaylist = added; }
+      draft.customBackground = added.at(-1);
+      draft.background = 'custom';
+      renderSettings();
+    }
+    if (failures.length) throw new Error(added.length ? `已添加 ${added.length} 张，${failures.length} 张上传失败` : failures[0]);
+  } finally { $('#upload-label').textContent = '上传图片'; e.target.value = ''; e.target.disabled = false; $('#save-settings').disabled = false; $('#reset-settings').disabled = false; }
 });
-on('#reset-settings', 'click', () => { state.draftSettings = { ...defaults, customBackground: state.draftSettings.customBackground, sidebarCollapsed: state.settings.sidebarCollapsed }; renderSettings(); });
+on('#reset-settings', 'click', () => { state.draftSettings = { ...structuredClone(defaults), customBackground: state.draftSettings.customBackground, customBackgrounds: state.draftSettings.customBackgrounds, sidebarCollapsed: state.settings.sidebarCollapsed }; intervalUnit = 1; renderSettings(); });
 on('#save-settings', 'click', async e => {
   e.target.disabled = true;
   try {
+    if (state.draftSettings.backgroundSlideshow) {
+      if (!$('#background-interval').reportValidity()) return;
+      if (state.draftSettings.backgroundPlaylist.length < 2) throw new Error('轮播至少选择两张背景');
+    } else if (!state.draftSettings.backgroundPlaylist.length) state.draftSettings.backgroundPlaylist = [singleBackgroundId(state.draftSettings)];
     state.settings = await api('/api/settings', { method: 'PUT', body: state.draftSettings });
     $('#settings-dialog').close(); toast('外观已保存');
   } finally { e.target.disabled = false; }
 });
-$('#settings-dialog').addEventListener('close', () => { applyAppearance(state.settings); applySidebar(); state.draftSettings = null; });
+$('#settings-dialog').addEventListener('close', () => {
+  if ($('#settings-dialog').open) return;
+  applyAppearance(state.settings); applySidebar(); state.draftSettings = null;
+});
 on('#sidebar-toggle', 'click', toggleSidebar);
 on('#sidebar-collapse', 'click', toggleSidebar);
 on('#sidebar-scrim', 'click', closeSidebar);

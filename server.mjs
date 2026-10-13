@@ -27,7 +27,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id = 1), value TEXT NOT NULL);
 `);
 
-const defaults = { background: 'mist', customBackground: null, fontSize: 15, uiFontSize: 16, sidebarCollapsed: false, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
+const backgroundIds = ['mist', 'dusk', 'sage', 'paper'];
+const defaults = { background: 'mist', customBackground: null, customBackgrounds: [], backgroundSlideshow: false, backgroundPlaylist: ['mist'], backgroundInterval: 30, backgroundViews: {}, heroTransparency: 45, todoTransparency: 30, fontSize: 15, uiFontSize: 16, sidebarCollapsed: false, textColor: '#444c45', headingColor: '#253b2d', entryColor: '#444c45', todoColor: '#444c45' };
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -73,11 +74,21 @@ function entryValue(body) {
 function todoValue(body) {
   return { content: contentValue(body.content), due: dueValue(body.due), color: colorValue(body.color), font_size: sizeValue(body.font_size) };
 }
+function uploadedBackgroundValue(value) {
+  if (typeof value !== 'string' || !/^\/uploads\/[\da-f-]+\.(png|jpg|webp)$/.test(value) || !existsSync(resolve(DATA, value.slice(1)))) fail('背景图片不存在');
+  return value;
+}
 function settingsValue(body) {
   const current = readSettings();
   const result = { ...current };
   for (const key of ['textColor', 'headingColor', 'entryColor', 'todoColor']) if (key in body) result[key] = colorValue(body[key]) || defaults[key];
   if ('fontSize' in body) result.fontSize = sizeValue(body.fontSize) || defaults.fontSize;
+  for (const key of ['heroTransparency', 'todoTransparency']) {
+    if (key in body) {
+      if (!Number.isInteger(body[key]) || body[key] < 0 || body[key] > 90) fail('卡片透明度范围为 0–90%');
+      result[key] = body[key];
+    }
+  }
   if ('uiFontSize' in body) {
     if (!Number.isInteger(body.uiFontSize) || body.uiFontSize < 12 || body.uiFontSize > 24) fail('界面字号范围为 12–24');
     result.uiFontSize = body.uiFontSize;
@@ -87,19 +98,58 @@ function settingsValue(body) {
     result.sidebarCollapsed = body.sidebarCollapsed;
   }
   if ('background' in body) {
-    if (!['mist', 'dusk', 'sage', 'paper', 'custom'].includes(body.background)) fail('背景不存在');
+    if (![...backgroundIds, 'custom'].includes(body.background)) fail('背景不存在');
     result.background = body.background;
   }
-  if ('customBackground' in body) {
-    if (body.customBackground !== null && (typeof body.customBackground !== 'string' || !/^\/uploads\/[\da-f-]+\.(png|jpg|webp)$/.test(body.customBackground) || !existsSync(resolve(DATA, body.customBackground.slice(1))))) fail('背景图片不存在');
-    result.customBackground = body.customBackground;
+  if ('customBackgrounds' in body) {
+    if (!Array.isArray(body.customBackgrounds) || body.customBackgrounds.length > 50) fail('最多保存 50 张自定义背景');
+    result.customBackgrounds = body.customBackgrounds.map(item => {
+      if (!item || typeof item.name !== 'string' || !item.name.trim() || item.name.length > 120) fail('背景名称无效');
+      return { url: uploadedBackgroundValue(item.url), name: item.name.trim() };
+    });
+    if (new Set(result.customBackgrounds.map(item => item.url)).size !== result.customBackgrounds.length) fail('背景图片不能重复');
   }
+  if ('customBackground' in body) {
+    result.customBackground = body.customBackground === null ? null : uploadedBackgroundValue(body.customBackground);
+    // Keep older clients and existing single-image settings compatible with the gallery.
+    if (result.customBackground && !result.customBackgrounds.some(item => item.url === result.customBackground)) {
+      if ('customBackgrounds' in body) fail('选中的背景不在图库中');
+      result.customBackgrounds = [...result.customBackgrounds, { url: result.customBackground, name: '我的背景' }];
+    }
+  }
+  if (result.customBackgrounds.length > 50) fail('最多保存 50 张自定义背景');
+  if (result.customBackground && !result.customBackgrounds.some(item => item.url === result.customBackground)) fail('选中的背景不在图库中');
   if (result.background === 'custom' && !result.customBackground) fail('请先选择背景图片');
+  if ('backgroundSlideshow' in body) {
+    if (typeof body.backgroundSlideshow !== 'boolean') fail('轮播状态必须为布尔值');
+    result.backgroundSlideshow = body.backgroundSlideshow;
+  }
+  if ('backgroundInterval' in body) {
+    if (!Number.isInteger(body.backgroundInterval) || body.backgroundInterval < 5 || body.backgroundInterval > 86400) fail('轮播间隔范围为 5 秒至 24 小时');
+    result.backgroundInterval = body.backgroundInterval;
+  }
+  if ('backgroundPlaylist' in body) {
+    if (!Array.isArray(body.backgroundPlaylist) || body.backgroundPlaylist.length < 1 || body.backgroundPlaylist.length > 54) fail('请选择轮播图片');
+    result.backgroundPlaylist = [...body.backgroundPlaylist];
+  }
+  const available = new Set([...backgroundIds, ...result.customBackgrounds.map(item => item.url)]);
+  if ('backgroundViews' in body) {
+    if (!body.backgroundViews || typeof body.backgroundViews !== 'object' || Array.isArray(body.backgroundViews) || Object.keys(body.backgroundViews).length > 54) fail('背景取景设置无效');
+    result.backgroundViews = Object.fromEntries(Object.entries(body.backgroundViews).map(([id, view]) => {
+      if (!available.has(id) || !view || !['cover', 'contain'].includes(view.fit) || ![view.x, view.y].every(value => Number.isFinite(value) && value >= 0 && value <= 100)) fail('背景取景设置无效');
+      return [id, { x: view.x, y: view.y, fit: view.fit }];
+    }));
+  } else result.backgroundViews = Object.fromEntries(Object.entries(result.backgroundViews).filter(([id]) => available.has(id)));
+  if (result.backgroundPlaylist.some(value => !available.has(value)) || new Set(result.backgroundPlaylist).size !== result.backgroundPlaylist.length) fail('轮播图片无效');
+  if (result.backgroundSlideshow && result.backgroundPlaylist.length < 2) fail('轮播至少选择两张背景');
   return result;
 }
 function readSettings() {
   const row = db.prepare('SELECT value FROM settings WHERE id = 1').get();
-  return { ...defaults, ...(row ? JSON.parse(row.value) : {}) };
+  const saved = row ? JSON.parse(row.value) : {};
+  const result = { ...defaults, ...saved, backgroundViews: { ...(saved.backgroundViews || {}) }, customBackgrounds: [...(saved.customBackgrounds || [])], backgroundPlaylist: [...(saved.backgroundPlaylist || [saved.background === 'custom' && saved.customBackground ? saved.customBackground : saved.background || 'mist'])] };
+  if (result.customBackground && !result.customBackgrounds.some(item => item.url === result.customBackground)) result.customBackgrounds.push({ url: result.customBackground, name: '我的背景' });
+  return result;
 }
 function readBody(req, limit = 1024 * 1024) {
   return new Promise((resolveBody, reject) => {
